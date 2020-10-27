@@ -1,5 +1,4 @@
 library(Seurat)
-BiocManager::install('Seurat')
 library(dplyr)
 library(ggplot2)
 library(magrittr)
@@ -221,3 +220,212 @@ plot3<-VlnPlot(object = wang,pt.size=0.1, features ='AT1G77690')
 plot4<-VlnPlot(object = wang,pt.size=0.1, features ='AT3G54890')
 CombinePlots(plots = list(plot1,plot2,plot3,plot4),legend = 'none',ncol=1)
 dev.off()
+save(wang,file = "wang.rds")
+pdf("cell_identify/meristematic.pdf",height = 14,width = 14)
+FeaturePlot(wang,features=c('AT3G11260','AT1G73590','AT2G04025','AT3G20840'),cols=c("grey","yellow","red","brown")
+            ,reduction = 'umap',pt.size = 1,label.size = 4)
+dev.off()
+##==============================6.拟时间分析==========================
+id<-c("12","14","19")
+cell.sub <- subset(wang@meta.data,seurat_clusters==id)
+scRNAsub <- subset(wang, cells=row.names(cell.sub))
+dim(scRNAsub)
+library(monocle)
+dir.create("pseudotime121419")
+data <- as(as.matrix(scRNAsub@assays$RNA@counts), 'sparseMatrix')
+pd <- new('AnnotatedDataFrame', data = scRNAsub@meta.data)
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+mycds <- newCellDataSet(data,
+                        phenoData = pd,
+                        featureData = fd,
+                        expressionFamily = negbinomial.size())
+mycds <- estimateSizeFactors(mycds)
+mycds <- estimateDispersions(mycds, cores=4, relative_expr = TRUE)
+## 选择代表性基因
+##使用monocle选择的高变基因
+disp_table <- dispersionTable(mycds)
+disp.genes <- subset(disp_table, mean_expression >= 0.1 & dispersion_empirical >= 1 * dispersion_fit)$gene_id
+mycds <- setOrderingFilter(mycds, disp.genes)
+## 降维以及细胞排序
+#降维
+mycds <- reduceDimension(mycds, max_components = 2, method = 'DDRTree')
+#排序
+mycds <- orderCells(mycds)
+#State轨迹分布图
+plot1 <- plot_cell_trajectory(mycds, color_by = "State")
+ggsave("pseudotime121419/State.pdf", plot = plot1, width = 6, height = 5)
+ggsave("pseudotime121419/State.png", plot = plot1, width = 6, height = 5)
+##Cluster轨迹分布图
+plot2 <- plot_cell_trajectory(mycds, color_by = "seurat_clusters")
+ggsave("pseudotime121419/Cluster.pdf", plot = plot2, width = 6, height = 5)
+ggsave("pseudotime121419/Cluster.png", plot = plot2, width = 6, height = 5)
+##Pseudotime轨迹图
+plot3 <- plot_cell_trajectory(mycds, color_by = "Pseudotime")
+ggsave("pseudotime121419/Pseudotime.pdf", plot = plot3, width = 6, height = 5)
+ggsave("pseudotime121419/Pseudotime.png", plot = plot3, width = 6, height = 5)
+##合并作图
+plotc <- plot1|plot2|plot3
+ggsave("pseudotime121419/Combination.pdf", plot = plotc, width = 10, height = 3.5)
+ggsave("pseudotime121419/Combination.png", plot = plotc, width = 10, height = 3.5)
+##保存结果
+
+write.csv(pData(mycds), "pseudotime121419/pseudotime.csv")
+p1 <- plot_cell_trajectory(mycds, color_by = "State") + facet_wrap(~State, nrow = 1)
+p2 <- plot_cell_trajectory(mycds, color_by = "seurat_clusters") + facet_wrap(~seurat_clusters, nrow = 1)
+plotc <- p1/p2
+ggsave("pseudotime121419/trajectory_facet.png", plot = plotc, width = 6, height = 5)
+##BEAM分析
+disp_table <- dispersionTable(mycds)
+disp.genes <- subset(disp_table, mean_expression >= 0.5&dispersion_empirical >= 1*dispersion_fit)
+disp.genes <- as.character(disp.genes$gene_id)
+mycds_sub <- mycds[disp.genes,]
+#State轨迹分布图
+plot1 <- plot_cell_trajectory(mycds_sub, color_by = "State")
+ggsave("pseudotime121419/BEAM_State.pdf", plot = plot1, width = 6, height = 5)
+ggsave("pseudotime121419/BEAM_State.png", plot = plot1, width = 6, height = 5)
+##Cluster轨迹分布图
+plot2 <- plot_cell_trajectory(mycds_sub, color_by = "seurat_clusters")
+ggsave("pseudotime121419/BEAM_Cluster.pdf", plot = plot2, width = 6, height = 5)
+ggsave("pseudotime121419/BEAM_Cluster.png", plot = plot2, width = 6, height = 5)
+##Pseudotime轨迹图
+plot3 <- plot_cell_trajectory(mycds_sub, color_by = "Pseudotime")
+ggsave("pseudotime121419/BEAM_Pseudotime.pdf", plot = plot3, width = 6, height = 5)
+ggsave("pseudotime121419/BEAM_Pseudotime.png", plot = plot3, width = 6, height = 5)
+
+##合并作图
+plotc <- plot1|plot2|plot3
+ggsave("pseudotime121419/BEAM_Combination.pdf", plot = plotc, width = 10, height = 3.5)
+ggsave("pseudotime121419/BEAM_Combination.png", plot = plotc, width = 10, height = 3.5)
+##保存结果
+beam_res <- BEAM(mycds_sub, branch_point = 1, cores = 8)
+beam_res <- beam_res[order(beam_res$qval),]
+beam_res <- beam_res[,c("gene_short_name", "pval", "qval")]
+mycds_sub_beam <- mycds_sub[row.names(subset(beam_res, qval < 1e-4)),]
+pdf("pseudotime121419/BEAM_pseudotime_heatmap2.pdf",width = 10, height = 10)
+plot_genes_branched_heatmap(mycds_sub_beam,  branch_point = 1, 
+                            num_clusters = 5, show_rownames = F)
+dev.off()
+##寻找相应的基因绘制轨迹图
+matrix_dir="filtered_gene_bc_matrices/ref/"
+barcode.path <- paste0(matrix_dir,"barcodes.tsv")
+features.path <- paste0(matrix_dir,"genes.tsv")
+matrix.path <- paste0(matrix_dir, "matrix.mtx")
+mat1 <- readMM(file = matrix.path)
+feature.names = read.delim(features.path,
+                           header = FALSE,
+                           stringsAsFactors = FALSE)
+barcode.names = read.delim(barcode.path,
+                           header = FALSE,
+                           stringsAsFactors = FALSE)
+colnames(mat1) = barcode.names$V1
+rownames(mat1) = feature.names$V1
+mat1<-as.matrix(mat1)
+gene<-t(as.matrix(mat1[c('AT3G11260','AT1G73590',
+       'AT2G04025','AT3G20840','AT1G50490'),
+     colnames(scRNAsub@assays$RNA@counts)]))
+colnames(gene)<-c("WOX5","PIN1","RGF3","PLT1","UBC20")
+mycds_sub@phenoData@data<-cbind(mycds_sub@phenoData@data,gene)
+mycds_sub@phenoData@data[mycds_sub@phenoData@data == 0] <- NA
+p1<-plot_cell_trajectory(mycds_sub, color_by = "WOX5")+scale_color_gradient(na.value = "grey",low="yellow",high="red")
+p2<-plot_cell_trajectory(mycds_sub, color_by = "PIN1")+scale_color_gradient(na.value = "grey",low="yellow",high="red")
+p3<-plot_cell_trajectory(mycds_sub, color_by = "RGF3")+scale_color_gradient(na.value = "grey",low="yellow",high="red")
+p4<-plot_cell_trajectory(mycds_sub, color_by = "PLT1")+scale_color_gradient(na.value = "grey",low="yellow",high="red")
+p5<-plot_cell_trajectory(mycds_sub, color_by = "UBC20")+scale_color_gradient(na.value = "grey",low="yellow",high="red")
+plotc <- p1|p2|p3|p4|p5
+ggsave("pseudotime121419/meristematic.pdf", plot = plotc, width = 18, height = 5)
+ggsave("pseudotime121419/meristematic.png", plot = plotc, width = 18, height = 5)
+
+
+id<-c("4","5","19")
+cell.sub <- subset(wang@meta.data,seurat_clusters==id)
+scRNAsub <- subset(wang, cells=row.names(cell.sub))
+dim(scRNAsub)
+dir.create("pseudotime4519")
+data <- as(as.matrix(scRNAsub@assays$RNA@counts), 'sparseMatrix')
+pd <- new('AnnotatedDataFrame', data = scRNAsub@meta.data)
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+mycds <- newCellDataSet(data,
+                        phenoData = pd,
+                        featureData = fd,
+                        expressionFamily = negbinomial.size())
+mycds <- estimateSizeFactors(mycds)
+mycds <- estimateDispersions(mycds, cores=4, relative_expr = TRUE)
+## 选择代表性基因
+##使用monocle选择的高变基因
+disp_table <- dispersionTable(mycds)
+disp.genes <- subset(disp_table, mean_expression >= 0.1 & dispersion_empirical >= 1 * dispersion_fit)$gene_id
+mycds <- setOrderingFilter(mycds, disp.genes)
+## 降维以及细胞排序
+#降维
+mycds <- reduceDimension(mycds, max_components = 2, method = 'DDRTree')
+#排序
+mycds <- orderCells(mycds)
+#State轨迹分布图
+plot1 <- plot_cell_trajectory(mycds, color_by = "State")
+ggsave("pseudotime4519/State.pdf", plot = plot1, width = 6, height = 5)
+ggsave("pseudotime4519/State.png", plot = plot1, width = 6, height = 5)
+##Cluster轨迹分布图
+plot2 <- plot_cell_trajectory(mycds, color_by = "seurat_clusters")
+ggsave("pseudotime4519/Cluster.pdf", plot = plot2, width = 6, height = 5)
+ggsave("pseudotime4519/Cluster.png", plot = plot2, width = 6, height = 5)
+##Pseudotime轨迹图
+plot3 <- plot_cell_trajectory(mycds, color_by = "Pseudotime")
+ggsave("pseudotime4519/Pseudotime.pdf", plot = plot3, width = 6, height = 5)
+ggsave("pseudotime4519/Pseudotime.png", plot = plot3, width = 6, height = 5)
+##合并作图
+plotc <- plot1|plot2|plot3
+ggsave("pseudotime4519/Combination.pdf", plot = plotc, width = 10, height = 3.5)
+ggsave("pseudotime4519/Combination.png", plot = plotc, width = 10, height = 3.5)
+##保存结果
+
+write.csv(pData(mycds), "pseudotime121419/pseudotime.csv")
+p1 <- plot_cell_trajectory(mycds, color_by = "State") + facet_wrap(~State, nrow = 1)
+p2 <- plot_cell_trajectory(mycds, color_by = "seurat_clusters") + facet_wrap(~seurat_clusters, nrow = 1)
+plotc <- p1/p2
+ggsave("pseudotime4519/trajectory_facet.png", plot = plotc, width = 6, height = 5)
+save(PPdata,mycds)
+##BEAM分析
+disp_table <- dispersionTable(mycds)
+disp.genes <- subset(disp_table, mean_expression >= 0.5&dispersion_empirical >= 1*dispersion_fit)
+disp.genes <- as.character(disp.genes$gene_id)
+mycds_sub <- mycds[disp.genes,]
+#State轨迹分布图
+plot1 <- plot_cell_trajectory(mycds_sub, color_by = "State")
+ggsave("pseudotime4519/BEAM_State.pdf", plot = plot1, width = 6, height = 5)
+ggsave("pseudotime4519/BEAM_State.png", plot = plot1, width = 6, height = 5)
+##Cluster轨迹分布图
+plot2 <- plot_cell_trajectory(mycds_sub, color_by = "seurat_clusters")
+ggsave("pseudotime4519/BEAM_Cluster.pdf", plot = plot2, width = 6, height = 5)
+ggsave("pseudotime4519/BEAM_Cluster.png", plot = plot2, width = 6, height = 5)
+##Pseudotime轨迹图
+plot3 <- plot_cell_trajectory(mycds_sub, color_by = "Pseudotime")
+ggsave("pseudotime4519/BEAM_Pseudotime.pdf", plot = plot3, width = 6, height = 5)
+ggsave("pseudotime4519/BEAM_Pseudotime.png", plot = plot3, width = 6, height = 5)
+
+##合并作图
+plotc <- plot1|plot2|plot3
+ggsave("pseudotime4519/BEAM_Combination.pdf", plot = plotc, width = 10, height = 3.5)
+ggsave("pseudotime4519/BEAM_Combination.png", plot = plotc, width = 10, height = 3.5)
+##保存结果
+beam_res <- BEAM(mycds_sub, branch_point = 1, cores = 8)
+beam_res <- beam_res[order(beam_res$qval),]
+beam_res <- beam_res[,c("gene_short_name", "pval", "qval")]
+mycds_sub_beam <- mycds_sub[row.names(subset(beam_res, qval < 1e-4)),]
+pdf("pseudotime4519/BEAM_pseudotime_heatmap2.pdf",width = 10, height = 10)
+plot_genes_branched_heatmap(mycds_sub_beam,  branch_point = 1, 
+                            num_clusters = 5, show_rownames = F)
+dev.off()
+##寻找相应的基因绘制轨迹图
+gene<-t(as.matrix(mat1[c('AT4G37390','AT3G48100','AT4G31920'),
+                       colnames(scRNAsub@assays$RNA@counts)]))
+colnames(gene)<-c("AUR3","ARR5","ARR10")
+mycds_sub@phenoData@data<-cbind(mycds_sub@phenoData@data,gene)
+mycds_sub@phenoData@data[mycds_sub@phenoData@data == 0] <- NA
+p1<-plot_cell_trajectory(mycds_sub, color_by = "AUR3")+scale_color_gradient(na.value = "grey",low="yellow",high="red")
+p2<-plot_cell_trajectory(mycds_sub, color_by = "ARR5")+scale_color_gradient(na.value = "grey",low="yellow",high="red")
+p3<-plot_cell_trajectory(mycds_sub, color_by = "ARR10")+scale_color_gradient(na.value = "grey",low="yellow",high="red")
+plotc <- p1|p2|p3
+ggsave("pseudotime4519/rootcap.pdf", plot = plotc, width = 18, height = 5)
+ggsave("pseudotime4519/rootcap.png", plot = plotc, width = 18, height = 5)
